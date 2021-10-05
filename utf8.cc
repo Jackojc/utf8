@@ -38,21 +38,29 @@ namespace utf8 {
     #endif
   }
 
+  uint32_t countl_zero(uint32_t x) {
+    #if defined(__clang__) || defined(__GNUC__)
+      return __builtin_clz(x); // builtin on gcc/clang.
+    #else
+      x = ~x;
+      uint32_t count = 0;
+
+      while (x & (1u << 31u)) {
+        count++;
+        x <<= 1;
+      }
+
+      return count;
+    #endif
+  }
+
+  uint32_t countl_one(uint32_t x) {
+    return countl_zero(~x);
+  }
+
   extern
   uint8_t char_size (uint8_t const* c) {
-    const bool vals[] = {
-      (*c & 0b10000000) == 0b00000000,
-      (*c & 0b11100000) == 0b11000000,
-      (*c & 0b11110000) == 0b11100000,
-      (*c & 0b11111000) == 0b11110000,
-    };
-
-    uint8_t out = 0;
-
-    for (uint8_t i = 0; i < 4; ++i)
-      vals[i] && (out = i);
-
-    return out + 1;
+    return countl_one((((uint32_t)((*c | 0b10000000) & ~0b01000000 ) | ((*c & 0b10000000) >> 1)) << 24));
   }
 
   extern
@@ -79,16 +87,39 @@ namespace utf8 {
 
   extern
   int32_t to_int (uint8_t const* c) {
-    int32_t out = *c;
+    constexpr auto loop = [] (uint8_t const* c, size_t sz) {
+      // The table below has a row for each of the 4 possible sizes of codepoint.
+      // The first column is the size mask
+      constexpr uint8_t masks[] = {
+      //v-------------------masks--------------------v     |    v----shifts----v
+        0b11111111, 0b00000000, 0b00000000, 0b00000000, /* | */  0u,  0u, 0u, 0u, // 1 byte(s)
+        0b00011111, 0b00111111, 0b00000000, 0b00000000, /* | */  6u,  0u, 0u, 0u, // 2 byte(s)
+        0b00001111, 0b00111111, 0b00111111, 0b00000000, /* | */ 12u,  6u, 0u, 0u, // 3 byte(s)
+        0b00000111, 0b00111111, 0b00111111, 0b00111111, /* | */ 18u, 12u, 6u, 0u, // 4 byte(s)
+      };
 
-    switch (char_size(c)) {
-      case 1: return out;
-      case 2: return ((out & 31) << 6) | (c[1] & 63);
-      case 3: return ((out & 15) << 12) | ((c[1] & 63) << 6) | (c[2] & 63);
-      case 4: return ((out & 7) << 18) | ((c[1] & 63) << 12) | ((c[2] & 63) << 6) | (c[3] & 63);
+      constexpr size_t max_codepoint_sz = 4u;
+      const auto row = ((max_codepoint_sz * 2u) * (sz - 1u)); // Row in the table above to use.
+
+      int32_t out = 0;
+
+      // Loop through bytes in codepoint and perform 3 operations:
+      // 1. We mask out either the starting bytes size specifier _or_ the continuation marker
+      // 2. We shift the byte left by `i * 6u`
+      // 3. We OR it with `out` to insert the byte in the correct location
+      for (size_t i = 0; i != sz; i++)
+        out |= (c[i] & masks[row + i]) << masks[row + 4u + i];
+
+      return out;
+    };
+
+    switch (char_size(*c)) {
+      [[unlikely]] case 2: return loop(c, 2);
+      [[unlikely]] case 3: return loop(c, 3);
+      [[unlikely]] case 4: return loop(c, 4);
     }
 
-    return 0;
+    return loop(c, 1);
   }
 
   extern
